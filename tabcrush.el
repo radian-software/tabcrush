@@ -160,23 +160,33 @@ Modify buffer text and update header line."
 The car is the beginning of the text in the current cell and the
 cdr is the end, not including any whitespace. If no cell can be
 identified, raise an error."
-  (save-excursion
-    (tabcrush--step-away-from-edges)
-    (unless (search-backward tabcrush-delimiter nil 'noerror)
-      (tabcrush--no-cell))
-    (goto-char (match-end 0))
-    (unless (re-search-forward "[^[:space:]]" nil 'noerror)
-      (tabcrush--no-cell))
-    (goto-char (match-beginning 0))
-    (let ((beginning (point)))
-      (unless (search-forward tabcrush-delimiter nil 'noerror)
-        (tabcrush--no-cell))
-      (goto-char (match-beginning 0))
-      (unless (re-search-backward "[^[:space:]]" nil 'noerror)
+  (cl-block nil
+    (save-excursion
+      (tabcrush--step-away-from-edges)
+      (unless (search-backward tabcrush-delimiter nil 'noerror)
         (tabcrush--no-cell))
       (goto-char (match-end 0))
-      (let ((end (point)))
-        (cons beginning end)))))
+      (unless (re-search-forward "[^[:space:]]" nil 'noerror)
+        (tabcrush--no-cell))
+      (goto-char (match-beginning 0))
+      (when (looking-at (regexp-quote tabcrush-delimiter))
+        ;; Cell is empty. Go back to the left-hand side and give an
+        ;; empty region.
+        (let ((rhs (point)))
+          (unless (search-backward tabcrush-delimiter nil 'noerror)
+            (tabcrush--no-cell))
+          (goto-char (match-end 0))
+          (let ((beginning (min (1+ (point)) rhs)))
+            (cl-return (cons beginning beginning)))))
+      (let ((beginning (point)))
+        (unless (search-forward tabcrush-delimiter nil 'noerror)
+          (tabcrush--no-cell))
+        (goto-char (match-beginning 0))
+        (unless (re-search-backward "[^[:space:]]" nil 'noerror)
+          (tabcrush--no-cell))
+        (goto-char (match-end 0))
+        (let ((end (point)))
+          (cons beginning end))))))
 
 (defun tabcrush--cell-column-index ()
   "Return the index of the column in which the current cell resides."
