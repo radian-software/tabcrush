@@ -36,13 +36,6 @@
   "String used as the column delimiter for Tabcrush tables."
   :type 'string)
 
-(define-derived-mode tabcrush-mode nil "Tabcrush"
-  "Major mode for editing very large tables efficiently."
-  (setq-local truncate-lines t)
-  (setq-local auto-fill-function nil)
-  (face-remap-add-relative
-   'header-line `(:height ,(face-attribute 'default :height))))
-
 (defun tabcrush--row-to-list ()
   "Return the contents of the current row as a list of strings."
   (let ((row nil))
@@ -127,6 +120,13 @@ Modify buffer text and update header line."
              (point)))
           (insert (tabcrush--row-to-string row column-widths)))
         (forward-line)))))
+
+(define-derived-mode tabcrush-mode nil "Tabcrush"
+  "Major mode for editing very large tables efficiently."
+  (setq-local truncate-lines t)
+  (setq-local auto-fill-function nil)
+  (face-remap-add-relative
+   'header-line `(:height ,(face-attribute 'default :height))))
 
 ;;;; Closing remarks
 
