@@ -246,7 +246,13 @@ identified, raise an error."
 
 (defvar tabcrush-mode-map
   (let ((map (make-sparse-keymap "Tabcrush")))
-    ;; TODO: add keybindings here.
+    (define-key map (kbd "M-a") #'tabcrush-beginning-of-cell)
+    (define-key map (kbd "M-e") #'tabcrush-end-of-cell)
+    (define-key map (kbd "M-k") #'tabcrush-kill-cell)
+    (dolist (tab '("TAB" "<tab>"))
+      (define-key map (kbd tab) #'tabcrush-right-cell))
+    (dolist (ret '("RET" "<return>"))
+      (define-key map (kbd ret) #'tabcrush-down-cell))
     map))
 
 (define-derived-mode tabcrush-mode nil "Tabcrush"
