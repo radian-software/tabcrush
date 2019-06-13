@@ -23,9 +23,13 @@
 ;; variable declarations in each section, run M-x occur with the
 ;; following query: ^;;;;* \|^(
 
+;;;; Libraries
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'thingatpt)
+
+;;;; User options
 
 (defgroup tabcrush nil
   "Major mode for editing very large tables efficiently."
@@ -35,6 +39,18 @@
 (defcustom tabcrush-delimiter "|"
   "String used as the column delimiter for Tabcrush tables."
   :type 'string)
+
+;;;; Errors
+
+(defun tabcrush--no-cell ()
+  "Signal a user error that point is not inside a table cell."
+  (user-error "Not inside a table cell"))
+
+(defun tabcrush--no-table ()
+  "Signal a user error that there is no table in the buffer."
+  (user-error "No table in the buffer"))
+
+;;;; Reading table data
 
 (defun tabcrush--row-to-list ()
   "Return the contents of the current row as a list of strings."
@@ -63,6 +79,8 @@
   "Return the column headers as a list of strings."
   (save-excursion
     (goto-char (point-min))
+    (unless (search-forward tabcrush-delimiter nil 'noerror)
+      (tabcrush--no-table))
     (tabcrush--row-to-list)))
 
 (defun tabcrush--row-to-string (row column-widths)
@@ -81,6 +99,8 @@ integers of the same length as ROW."
      row column-widths)
     tabcrush-delimiter)
    tabcrush-delimiter))
+
+;;;; Aligning tables
 
 (defun tabcrush--realign-visible ()
   "Realign currently visible table rows to the same widths.
@@ -121,8 +141,118 @@ Modify buffer text and update header line."
           (insert (tabcrush--row-to-string row column-widths)))
         (forward-line)))))
 
+;;;; Navigating tables
+
+(defun tabcrush--step-away-from-edges ()
+  "If at beginning or end of line, move one column towards center."
+  (cond
+   ((bolp)
+    (condition-case _
+        (forward-char)
+      (error (tabcrush--no-cell))))
+   ((eolp)
+    (condition-case _
+        (backward-char)
+      (error (tabcrush--no-cell))))))
+
+(defun tabcrush--cell-bounds ()
+  "Return the bounds of the current cell contents, as a cons cell.
+The car is the beginning of the text in the current cell and the
+cdr is the end, not including any whitespace. If no cell can be
+identified, raise an error."
+  (save-excursion
+    (tabcrush--step-away-from-edges)
+    (unless (search-backward tabcrush-delimiter nil 'noerror)
+      (tabcrush--no-cell))
+    (goto-char (match-end 0))
+    (unless (re-search-forward "[^[:space:]]" nil 'noerror)
+      (tabcrush--no-cell))
+    (goto-char (match-beginning 0))
+    (let ((beginning (point)))
+      (unless (search-forward tabcrush-delimiter nil 'noerror)
+        (tabcrush--no-cell))
+      (goto-char (match-beginning 0))
+      (unless (re-search-backward "[^[:space:]]" nil 'noerror)
+        (tabcrush--no-cell))
+      (goto-char (match-end 0))
+      (let ((end (point)))
+        (cons beginning end)))))
+
+(defun tabcrush--cell-column-index ()
+  "Return the index of the column in which the current cell resides."
+  (save-excursion
+    (let ((eot (save-excursion
+                 (end-of-line)
+                 (search-backward tabcrush-delimiter nil 'noerror)
+                 (point))))
+      (while (and (>= (point) eot) (not (bolp)))
+        (backward-char))
+      (let ((orig (point))
+            (index 0))
+        (beginning-of-line)
+        (dotimes (_ 2)
+          (search-forward tabcrush-delimiter nil 'noerror))
+        (while (< (- (point) 2) orig)
+          (search-forward tabcrush-delimiter nil 'noerror)
+          (cl-incf index))
+        index))))
+
+(defun tabcrush--goto-column (index)
+  "Go to the start of the cell at the given column INDEX in the current row."
+  (beginning-of-line)
+  (dotimes (_ (1+ index))
+    (unless (search-forward tabcrush-delimiter nil 'noerror)
+      (tabcrush--no-cell)))
+  (tabcrush-beginning-of-cell))
+
+(defun tabcrush-beginning-of-cell ()
+  "Go to the left-hand side of the current cell."
+  (interactive)
+  (goto-char (car (tabcrush--cell-bounds))))
+
+(defun tabcrush-end-of-cell ()
+  "Go to the right-hand side of the current cell."
+  (interactive)
+  (goto-char (cdr (tabcrush--cell-bounds))))
+
+(defun tabcrush-kill-cell ()
+  "Copy the contents of the current cell to the kill ring, and delete them."
+  (interactive)
+  (let ((bounds (tabcrush--cell-bounds)))
+    (kill-region (car bounds) (cdr bounds))))
+
+(defun tabcrush-right-cell ()
+  "Go to the left-hand side of the cell to the right."
+  (interactive)
+  (unless (search-forward tabcrush-delimiter nil 'noerror)
+    (tabcrush--no-cell))
+  (goto-char (match-end 0))
+  (goto-char (car (tabcrush--cell-bounds))))
+
+(defun tabcrush-down-cell ()
+  "Go to the left-hand side of the cell below."
+  (interactive)
+  (cl-block nil
+    (save-excursion
+      (forward-line)
+      (unless (search-forward
+               tabcrush-delimiter (save-excursion (end-of-line)) 'noerror)
+        (cl-return)))
+    (let ((index (tabcrush--cell-column-index)))
+      (forward-line)
+      (tabcrush--goto-column index))))
+
+;;;; Major mode
+
+(defvar tabcrush-mode-map
+  (let ((map (make-sparse-keymap "Tabcrush")))
+    ;; TODO: add keybindings here.
+    map))
+
 (define-derived-mode tabcrush-mode nil "Tabcrush"
-  "Major mode for editing very large tables efficiently."
+  "Major mode for editing very large tables efficiently.
+
+\\{tabcrush-mode-map}"
   (setq-local truncate-lines t)
   (setq-local auto-fill-function nil)
   (face-remap-add-relative
