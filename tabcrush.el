@@ -143,18 +143,6 @@ Modify buffer text and update header line."
 
 ;;;; Navigating tables
 
-(defun tabcrush--step-away-from-edges ()
-  "If at beginning or end of line, move one column towards center."
-  (cond
-   ((bolp)
-    (condition-case _
-        (forward-char)
-      (error (tabcrush--no-cell))))
-   ((eolp)
-    (condition-case _
-        (backward-char)
-      (error (tabcrush--no-cell))))))
-
 (defun tabcrush--cell-bounds ()
   "Return the bounds of the current cell contents, as a cons cell.
 The car is the beginning of the text in the current cell and the
