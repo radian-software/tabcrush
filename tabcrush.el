@@ -159,33 +159,50 @@ Modify buffer text and update header line."
   "Return the bounds of the current cell contents, as a cons cell.
 The car is the beginning of the text in the current cell and the
 cdr is the end, not including any whitespace. If no cell can be
-identified, raise an error."
+identified, raise an error.
+
+A cell starts at its left-hand delimiter, and goes to just before
+its right-hand delimiter, except for the last cell in a
+row (which includes its right-hand delimiter)."
   (cl-block nil
     (save-excursion
-      (tabcrush--step-away-from-edges)
-      (unless (search-backward tabcrush-delimiter nil 'noerror)
-        (tabcrush--no-cell))
-      (goto-char (match-end 0))
-      (unless (re-search-forward "[^[:space:]]" nil 'noerror)
+      (unless (eolp)
+        (condition-case _
+            (forward-char)
+          (error (tabcrush--no-cell))))
+      (when (save-excursion
+              (and (search-backward
+                    tabcrush-delimiter
+                    (save-excursion
+                      (beginning-of-line)
+                      (point))
+                    'noerror)
+                   (looking-at
+                    (concat
+                     (regexp-quote tabcrush-delimiter) "[[:space:]]*$"))))
+        (search-backward tabcrush-delimiter nil 'noerror))
+      (unless (search-forward tabcrush-delimiter nil 'noerror)
         (tabcrush--no-cell))
       (goto-char (match-beginning 0))
-      (when (looking-at (regexp-quote tabcrush-delimiter))
-        ;; Cell is empty. Go back to the left-hand side and give an
-        ;; empty region.
-        (let ((rhs (point)))
-          (unless (search-backward tabcrush-delimiter nil 'noerror)
-            (tabcrush--no-cell))
-          (goto-char (match-end 0))
-          (let ((beginning (min (1+ (point)) rhs)))
-            (cl-return (cons beginning beginning)))))
-      (let ((beginning (point)))
-        (unless (search-forward tabcrush-delimiter nil 'noerror)
-          (tabcrush--no-cell))
-        (goto-char (match-beginning 0))
-        (unless (re-search-backward "[^[:space:]]" nil 'noerror)
+      (unless (re-search-backward "[^[:space:]]" nil 'noerror)
+        (tabcrush--no-cell))
+      (goto-char (match-end 0))
+      (let ((end (point)))
+        (unless (search-backward tabcrush-delimiter nil 'noerror)
           (tabcrush--no-cell))
         (goto-char (match-end 0))
-        (let ((end (point)))
+        (when (looking-at
+               (concat "[[:space:]]*" (regexp-quote tabcrush-delimiter)))
+          (let ((beginning (point)))
+            ;; If cell is not totally empty, give a space between the
+            ;; left-hand delimiter and the field.
+            (when (looking-at "[[:space:]]")
+              (cl-incf beginning))
+            (cl-return (cons beginning beginning))))
+        (unless (re-search-forward "[^[:space:]]" nil 'noerror)
+          (tabcrush--no-cell))
+        (goto-char (match-beginning 0))
+        (let ((beginning (point)))
           (cons beginning end))))))
 
 (defun tabcrush--cell-column-index ()
