@@ -11,7 +11,20 @@
 
 ;;; Commentary:
 
-;; TODO
+;; Tabcrush is a package for very-large-scale table editing. It can
+;; handle tables of many thousands of lines without performance
+;; problems, by performing realignment only as necessary and only on
+;; currently visible lines.
+;;
+;; Tabcrush provides a major mode for table editing. In this mode,
+;; literally everything is interpreted as a table. Depending on the
+;; appearances of the `tabcrush-delimiter' string, the buffer is
+;; partitioned into empty or non-empty cells, which contain text
+;; content. Also, a Tabcrush buffer may have associated with it a list
+;; of column names. These names appear in the window's header line.
+;;
+;; The rules for determining how a buffer is partitioned into cells
+;; are as follows. Firstly,
 
 ;; Please see <https://github.com/raxod502/tabcrush> for more
 ;; information.
@@ -37,51 +50,229 @@
   :prefix "tabcrush-")
 
 (defcustom tabcrush-delimiter "|"
-  "String used as the column delimiter for Tabcrush tables."
+  "String used as the column delimiter for Tabcrush tables.
+May not contain whitespace, but any other characters are allowed."
   :type 'string)
 
 ;;;; Errors
 
-(defun tabcrush--no-cell ()
-  "Signal a user error that point is not inside a table cell."
-  (user-error "Not inside a table cell"))
+(define-error
+  'tabcrush-error "Tabcrush: user error" 'user-error)
+(define-error
+  'tabcrush-search-failed "Tabcrush: search failed" 'tabcrush-error)
+(define-error
+  'tabcrush-no-cell "Tabcrush: not inside cell" 'tabcrush-error)
+(define-error
+  'tabcrush-no-table "Tabcrush: not inside table" 'tabcrush-error)
 
-(defun tabcrush--no-table ()
-  "Signal a user error that there is no table in the buffer."
-  (user-error "No table in the buffer"))
+(defmacro tabcrush--signal (symbol &optional data)
+  "Signal a Tabcrush user error.
+SYMBOL (unquoted) is prepended with `tabcrush-' to make the error
+symbol for `signal'. DATA is evaluated and passed to `signal'."
+  (let ((error-symbol (intern (format "tabcrush-%S" symbol))))
+    (unless (get error-symbol 'error-message)
+      (error "No such error: %S" error-symbol))
+    `(signal ',error-symbol ,data)))
+
+;;;; Text navigation
+
+(defun tabcrush--bol ()
+  "Return the position of the beginning of the current line, as an integer."
+  (save-excursion
+    (beginning-of-line)
+    (point)))
+
+(defun tabcrush--eol ()
+  "Return the position of the end of the current line, as an integer."
+  (save-excursion
+    (end-of-line)
+    (point)))
+
+;;;; Delimiter handling
+
+(defun tabcrush--before-delimiter-p ()
+  "Return non-nil if `tabcrush-delimiter' is immediately after point.
+This function modifies the match data."
+  (looking-at (regexp-quote tabcrush-delimiter)))
+
+(defun tabcrush--after-delimiter-p ()
+  "Return non-nil if `tabcrush-delimiter' is immediately before point.
+This function modifies the match data."
+  (save-excursion
+    (backward-char (length tabcrush-delimiter))
+    (tabcrush--before-delimiter-p)))
+
+(cl-defun tabcrush--back-to-delimiter (side &key same-line)
+  "Move point backwards to the nearest occurrence of `tabcrush-delimiter'.
+If SIDE is `beginning', move point to the beginning of the
+delimiter. If SIDE is `end', move point to the end of it.
+
+If SAME-LINE is non-nil, only consider delimiters that occur on
+the same line as point.
+
+If no delimiter is found, signal `tabcrush-search-failed'.
+
+This function modifies the match data."
+  (unless (search-backward
+           tabcrush-delimiter (when same-line (tabcrush--bol)) 'noerror)
+    (tabcrush--signal search-failed))
+  (pcase side
+    (`beginning)
+    (`end (goto-char (match-end 0)))
+    (_ (error "Invalid SIDE: %S" side))))
+
+(cl-defun tabcrush--forward-to-delimiter (side &key same-line)
+  "Move point forwards to the nearest occurrence of `tabcrush-delimiter'.
+If SIDE is `beginning', move point to the beginning of the
+delimiter. If SIDE is `end', move point to the end of it.
+
+If SAME-LINE is non-nil, only consider delimiters that occur on
+the same line as point.
+
+If no delimiter is found, signal `tabcrush-search-failed'.
+
+This function modifies the match data."
+  (unless (search-forward
+           tabcrush-delimiter (when same-line (tabcrush--eol)) 'noerror)
+    (tabcrush--signal search-failed))
+  (pcase side
+    (`beginning (goto-char (match-beginning 0)))
+    (`end)
+    (_ (error "Invalid SIDE: %S" side))))
+
+;;;; Table geometry
+
+(defun tabcrush--inside-cell-p ()
+  "Return non-nil if point is inside a cell.
+
+This function modifies the match data."
+  (save-excursion
+    (beginning-of-line)
+    (condition-case _
+        (dotimes (_ 2 t)
+          (tabcrush--forward-to-delimiter 'end :same-line t))
+      (tabcrush-search-failed))))
+
+(defun tabcrush--borp ()
+  "Return non-nil if point is at the beginning of the current row.
+This means that point is farther to the left than it would be if
+it were `looking-at' the first delimiter in the row.")
+;; FIXME: finish this and use it
+
+(defun tabcrush--eorp ()
+  "Return non-nil if point is at the end of the current row.
+This means that point is `looking-at' the final delimiter in the
+row, or is farther to the right.
+
+If point is not inside a cell, raise an error.
+
+This function modifies the match data."
+  (unless (tabcrush--inside-cell-p)
+    (tabcrush--signal no-cell))
+  (save-excursion
+    (unless (eolp)
+      (forward-char))
+    (condition-case _
+        (prog1 nil
+          (tabcrush--forward-to-delimiter 'end :same-line t))
+      (tabcrush-search-failed t))))
+
+(defun tabcrush--cell-bounds ()
+  "Return the bounds of the current cell.
+Return the bounds as a cons cell, where the car is the beginning
+of the region of the buffer which is considered part of the
+current cell (inclusive) and the cdr is the end (exclusive).
+
+If point is not inside a table cell, raise an error.
+
+This function modifies the match data."
+  (save-excursion
+    (condition-case _
+        (let ((eorp (tabcrush--eorp)))
+          (when eorp
+            (if (tabcrush--looking-at-delimiter)
+                (condition-case _
+                    (if (bolp)
+                        (tabcrush--signal no-cell)
+                      (backward-char))
+                  (beginning-of-buffer (tabcrush--signal no-cell)))
+              (tabcrush--back-to-delimiter 'beginning :same-line t)))
+          (unless (and (null eorp) (tabcrush--looking-at-delimiter))
+            (tabcrush--back-to-delimiter 'beginning :same-line t))
+          (let ((beginning (point)))
+            (tabcrush--forward-to-delimiter 'end :same-line t)
+            (tabcrush--forward-to-delimiter 'beginning :same-line t)
+            (when (tabcrush--eorp)
+              (end-of-line)
+              (condition-case _
+                  (forward-char)
+                (end-of-buffer)))
+            (let ((end (point)))
+              (cons beginning end))))
+      (tabcrush-search-failed (tabcrush--signal no-cell)))))
+
+(defun tabcrush--cell-text-bounds ()
+  "Return the bounds of the text contents of the cell.
+This is the same as `tabcrush--cell-bounds', except that the cons
+cell bounds the text contents only, rather than the entire
+cell (which also includes spacing and one or both delimiters).
+
+This function modifies the match data."
+  (cl-block nil
+    (save-excursion
+      (let ((bounds (tabcrush--cell-bounds)))
+        (goto-char (car bounds))
+        (tabcrush--forward-to-delimiter 'end :same-line t)
+        (let ((orig (point)))
+          (if (< (re-search-forward "[^[:space:]]") (cdr bounds))
+              (goto-char (match-beginning 0))
+            (goto-char orig)
+            (when (looking-at "[[:space:]]")
+              (forward-char))
+            (cl-return (cons (point) (point)))))
+        (let ((beginning (point)))
+          (tabcrush--forward-to-delimiter 'beginning :same-line t)
+          (re-search-backward "[^[:space:]]")
+          (goto-char (match-end 0))
+          (let ((end (point)))
+            (cons beginning end)))))))
 
 ;;;; Reading table data
 
 (defun tabcrush--row-to-list ()
-  "Return the contents of the current row as a list of strings."
+  "Return the contents of the current row as a list of strings.
+
+This function modifies the match data."
   (let ((row nil))
     (save-excursion
-      (save-restriction
-        (widen)
-        (narrow-to-region
-         (save-excursion
-           (beginning-of-line)
-           (point))
-         (save-excursion
-           (end-of-line)
-           (point)))
-        (goto-char (point-min))
-        (save-match-data
-          (while (re-search-forward
-                  (format "%1$s[[:space:]]*\\(.*?\\)[[:space:]]*%1$s"
-                          (regexp-quote tabcrush-delimiter))
-                  nil 'noerror)
-            (push (match-string 1) row)
-            (goto-char (match-end 1))))
-        (nreverse row)))))
+      (beginning-of-line)
+      (while (progn
+               (let ((text-bounds (tabcrush--cell-text-bounds))
+                     (cell-bounds (tabcrush--cell-bounds)))
+                 (push (buffer-substring
+                        (car text-bounds)
+                        (cdr text-bounds))
+                       row)
+                 (goto-char (cdr cell-bounds))
+                 (not (string-match "\n" (buffer-substring
+                                          (car cell-bounds)
+                                          (cdr cell-bounds)))))))
+      (nreverse row))))
 
 (defun tabcrush--column-headers ()
   "Return the column headers as a list of strings."
   (save-excursion
-    (goto-char (point-min))
-    (unless (search-forward tabcrush-delimiter nil 'noerror)
-      (tabcrush--no-table))
-    (tabcrush--row-to-list)))
+    (save-restriction
+      (widen)
+      (goto-char (point-min))
+      (condition-case _
+          (progn
+            (tabcrush--forward-to-delimiter 'beginning)
+            (tabcrush--row-to-list))
+        ((tabcrush-search-failed tabcrush-no-cell)
+         (tabcrush--signal no-table))))))
+
+;;;; Aligning tables
 
 (defun tabcrush--row-to-string (row column-widths)
   "Turn ROW, a list of cell strings, into a string.
@@ -99,8 +290,6 @@ integers of the same length as ROW."
      row column-widths)
     tabcrush-delimiter)
    tabcrush-delimiter))
-
-;;;; Aligning tables
 
 (defun tabcrush--realign-visible ()
   "Realign currently visible table rows to the same widths.
@@ -141,57 +330,50 @@ Modify buffer text and update header line."
           (insert (tabcrush--row-to-string row column-widths)))
         (forward-line)))))
 
-;;;; Navigating tables
+;;;; Interactive functions
+;;;;; Table navigation
 
-(defun tabcrush--cell-bounds ()
-  "Return the bounds of the current cell contents, as a cons cell.
-The car is the beginning of the text in the current cell and the
-cdr is the end, not including any whitespace. If no cell can be
-identified, raise an error.
+(defun tabcrush-left-cell ()
+  "Go to the left-hand side of the cell to the left.
+If at the far left column and prefix argument is given, then wrap
+around to the end of the previous row."
+  (interactive)
+  (goto-char (car (tabcrush--cell-bounds)))
+  (backward-char)
+  (goto-char (car (tabcrush--cell-text-bounds))))
 
-A cell starts at its left-hand delimiter, and goes to just before
-its right-hand delimiter, except for the last cell in a
-row (which includes its right-hand delimiter)."
-  (cl-block nil
-    (save-excursion
-      (unless (eolp)
-        (condition-case _
-            (forward-char)
-          (error (tabcrush--no-cell))))
-      (when (save-excursion
-              (and (search-backward
-                    tabcrush-delimiter
-                    (save-excursion
-                      (beginning-of-line)
-                      (point))
-                    'noerror)
-                   (looking-at
-                    (concat
-                     (regexp-quote tabcrush-delimiter) "[[:space:]]*$"))))
-        (search-backward tabcrush-delimiter nil 'noerror))
-      (unless (search-forward tabcrush-delimiter nil 'noerror)
-        (tabcrush--no-cell))
-      (goto-char (match-beginning 0))
-      (unless (re-search-backward "[^[:space:]]" nil 'noerror)
-        (tabcrush--no-cell))
-      (goto-char (match-end 0))
-      (let ((end (point)))
-        (unless (search-backward tabcrush-delimiter nil 'noerror)
-          (tabcrush--no-cell))
-        (goto-char (match-end 0))
-        (when (looking-at
-               (concat "[[:space:]]*" (regexp-quote tabcrush-delimiter)))
-          (let ((beginning (point)))
-            ;; If cell is not totally empty, give a space between the
-            ;; left-hand delimiter and the field.
-            (when (looking-at "[[:space:]]")
-              (cl-incf beginning))
-            (cl-return (cons beginning beginning))))
-        (unless (re-search-forward "[^[:space:]]" nil 'noerror)
-          (tabcrush--no-cell))
-        (goto-char (match-beginning 0))
-        (let ((beginning (point)))
-          (cons beginning end))))))
+(defun tabcrush-right-cell ()
+  "Go to the left-hand side of the cell to the right."
+  (interactive)
+  (unless (search-forward tabcrush-delimiter nil 'noerror)
+    (tabcrush--no-cell))
+  (when (looking-at "[[:space:]]*$")
+    (end-of-line)
+    (ignore-errors
+      (forward-char)))
+  (goto-char (car (tabcrush--cell-bounds))))
+
+(defun tabcrush--cell-column-index ()
+  "Return the index of the column in which the current cell resides."
+  (save-excursion
+    (let ((orig (point)))
+      (beginning-of-line)
+      (while (< (cdr (tabcrush--cell-bounds)) orig)))
+    (let ((eot (save-excursion
+                 (end-of-line)
+                 (search-backward tabcrush-delimiter nil 'noerror)
+                 (point))))
+      (while (and (>= (point) eot) (not (bolp)))
+        (backward-char))
+      (let ((orig (point))
+            (index 0))
+        (beginning-of-line)
+        (dotimes (_ 2)
+          (search-forward tabcrush-delimiter nil 'noerror))
+        (while (< (- (point) 2) orig)
+          (search-forward tabcrush-delimiter nil 'noerror)
+          (cl-incf index))
+        index))))
 
 (defun tabcrush--cell-column-index ()
   "Return the index of the column in which the current cell resides."
@@ -236,14 +418,7 @@ row (which includes its right-hand delimiter)."
   (let ((bounds (tabcrush--cell-bounds)))
     (kill-region (car bounds) (cdr bounds))))
 
-(defun tabcrush-right-cell ()
-  "Go to the left-hand side of the cell to the right."
-  (interactive)
-  (unless (search-forward tabcrush-delimiter nil 'noerror)
-    (tabcrush--no-cell))
-  (goto-char (match-end 0))
-  (goto-char (car (tabcrush--cell-bounds))))
-
+;; FIXME: make it wrap around?
 (defun tabcrush-down-cell ()
   "Go to the left-hand side of the cell below."
   (interactive)
@@ -264,6 +439,7 @@ row (which includes its right-hand delimiter)."
     (define-key map (kbd "M-a") #'tabcrush-beginning-of-cell)
     (define-key map (kbd "M-e") #'tabcrush-end-of-cell)
     (define-key map (kbd "M-k") #'tabcrush-kill-cell)
+    (define-key map (kbd "<backtab>") #'tabcrush-left-cell)
     (dolist (tab '("TAB" "<tab>"))
       (define-key map (kbd tab) #'tabcrush-right-cell))
     (dolist (ret '("RET" "<return>"))
