@@ -1,10 +1,10 @@
 ;;; tabcrush.el --- Crushes table-editing problems. -*- lexical-binding: t -*-
 
-;; Copyright (C) 2019 Radon Rosborough
+;; Copyright (C) 2019-2022 Radian LLC <contact+tabcrush@radian.codes>
 
-;; Author: Radon Rosborough <radon.neon@gmail.com>
+;; Author: Radian LLC <contact+tabcrush@radian.codes>
 ;; Created: 6 June 2019
-;; Homepage: https://github.com/raxod502/tabcrush
+;; Homepage: https://github.com/radian-software/tabcrush
 ;; Keywords: applications
 ;; Package-Requires: ((emacs "26"))
 ;; Version: 0
@@ -26,7 +26,7 @@
 ;; The rules for determining how a buffer is partitioned into cells
 ;; are as follows. Firstly,
 
-;; Please see <https://github.com/raxod502/tabcrush> for more
+;; Please see <https://github.com/radian-software/tabcrush> for more
 ;; information.
 
 ;;; Code:
